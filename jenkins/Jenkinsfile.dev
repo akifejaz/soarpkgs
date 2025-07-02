@@ -4,12 +4,21 @@ pipeline {
     environment {
         SYSTMP = "${WORKSPACE}/tmp"  
         USER_AGENT = "Mozilla/5.0"  
+
+        EXCLUDE_CACHED = "YES"
+        FORCE_REBUILD_ALL = "NO"
+        KEEP_LOGS = "NO"
+        NOTIFY_DISCORD = "NO"
     }
 
     stages {
         stage('Clone Repository') {
             steps {
-                checkout scm  // Standard SCM checkout
+                checkout scm
+                sh '''#!/bin/bash
+                    mkdir -p "${WORKSPACE}/main/x86_64-Linux"
+                    mkdir -p "${SYSTMP}"
+                '''
             }
         }
 
@@ -19,61 +28,90 @@ pipeline {
                     set -x
                     echo "📦 Setting up build environment..."
                     
-                    # Create workspace directories
-                    mkdir -p "${WORKSPACE}/x86_64-Linux"
-                    mkdir -p "${WORKSPACE}/tmp"
+                    # Install core dependencies (without sudo)
+                    apt-get update -y && apt-get install -y \
+                        bc coreutils curl dos2unix fdupes jq moreutils wget \
+                        apt-transport-https apt-utils ca-certificates gnupg2 \
+                        p7zip-full rename rsync software-properties-common texinfo tmux util-linux
                     
-                    # Install core dependencies
-                    sudo apt-get update -y
-                    sudo apt-get install -y bc coreutils curl dos2unix jq moreutils wget
+                    export SYSTMP="${WORKSPACE}/tmp"
+                    mkdir -p "${SYSTMP}"
+                    echo "SYSTMP=${SYSTMP}" > "${WORKSPACE}/env.properties"
                     
-                    # Get user agent
-                    curl -qfsSL 'https://raw.githubusercontent.com/pkgforge/devscripts/main/Misc/User-Agents/ua_firefox_macos_latest.txt' > "${WORKSPACE}/user_agent.txt"
-                    export USER_AGENT="$(cat ${WORKSPACE}/user_agent.txt)"
+                    # Set user agent
+                    USER_AGENT="$(curl -qfsSL 'https://raw.githubusercontent.com/pkgforge/devscripts/main/Misc/User-Agents/ua_firefox_macos_latest.txt')"
                     echo "USER_AGENT=${USER_AGENT}" >> "${WORKSPACE}/env.properties"
+                    
+                    # Timezone setup
+                    # TODO 
+    
                 '''
             }
         }
 
         stage('Install Addons') {
             environment {
+                SYSTMP = "${WORKSPACE}/tmp"  
                 LOCAL_BIN = "${WORKSPACE}/.local/bin"
             }
             steps {
                 sh '''#!/bin/bash
                     set -x
-                    set +e  # Continue on error
+                    set +e
                     
-                    echo "📥 Setting up local bin directory..."
+                    echo "📥 Installing tools to ${LOCAL_BIN}..."
                     mkdir -p "${LOCAL_BIN}"
                     
                     # Install rclone locally
-                    echo "⬇️ Downloading rclone..."
-                    if ! curl -qfsSL "https://bin.pkgforge.dev/$(uname -m)/rclone" -o "${LOCAL_BIN}/rclone"; then
-                        echo "⚠️ Failed to download rclone (non-fatal)"
-                    else
-                        chmod +x "${LOCAL_BIN}/rclone"
-                        echo "✔️ Rclone installed to ${LOCAL_BIN}"
-                        
-                        echo "export PATH=\\"${LOCAL_BIN}:\\$PATH\\"" >> ~/.bashrc
-                        source ~/.bashrc  # Apply to current session
-                        
-                        # Verify installation
-                        if command -v rclone >/dev/null; then
-                            echo "✅ Rclone ready: $(rclone --version | head -n1)"
-                        else
-                            echo "❌ Rclone not in PATH (may need new shell)"
-                        fi
+                    curl -qfsSL "${BIN_CACHE_URL}/$(uname -m)/rclone" -o "${LOCAL_BIN}/rclone"
+                    chmod +x "${LOCAL_BIN}/rclone"
+                    
+                    # Install notify tool
+                    curl -qfsSL "${BIN_CACHE_URL}/$(uname -m)/notify" -o "${LOCAL_BIN}/notify"
+                    chmod +x "${LOCAL_BIN}/notify"
+                    
+                    # Setup Minisign
+                    mkdir -p "${WORKSPACE}/.minisign"
+                    echo "$MINISIGN_KEY" > "${WORKSPACE}/.minisign/pkgforge.key"
+                    
+                    # Update PATH
+                    echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
+                    source ~/.bashrc
+                '''
+            }
+        }
+
+        stage('Sanity Checks') {
+            environment {
+                SYSTMP = "${WORKSPACE}/tmp"  
+                LOCAL_BIN = "${WORKSPACE}/.local/bin"
+            }
+            steps {
+                sh '''#!/bin/bash
+                    echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
+                    source ~/.bashrc
+                    set +e
+                    echo "🔍 Running pre-build checks..."
+                    
+                    # Package count verification
+                    PKG_COUNT=$(curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/SBUILD_LIST.json" | jq -r '.[] | .pkg_family' | wc -l | tr -d '[:space:]')
+                    if [[ "${PKG_COUNT}" -le 10 ]]; then
+                        echo "❌ FATAL: Too few Packages to Build (${PKG_COUNT})"
+                        exit 1
                     fi
                     
-                    # Temporary PATH for current build
-                    export PATH="${LOCAL_BIN}:$PATH"
+                    # Dependency verification
+                    command -v rclone >/dev/null || {
+                        echo "❌ rclone not found in PATH"
+                        exit 1
+                    }
                 '''
             }
         }
 
         stage('Build Packages') {
             environment {
+                SYSTMP = "${WORKSPACE}/tmp"  
                 EXCLUDE_CACHED = "YES"
                 FORCE_REBUILD_ALL = "NO"
                 LOCAL_BIN = "${WORKSPACE}/.local/bin"
