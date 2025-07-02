@@ -1,8 +1,105 @@
-node('jupiter-16G-1'){
-    stage('*** Phase 1 ***') {
-        //Using bash commands
-        sh '''#!/bin/bash
-            echo "Hello World !\n"
-         '''
+pipeline {
+    agent { label 'jupiter-16G-1' }  // Using riscv machine (milk-v/jupiter)
+
+    environment {
+        SYSTMP = "${WORKSPACE}/tmp"  
+        USER_AGENT = "Mozilla/5.0"  
+    }
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                checkout scm  // Standard SCM checkout
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                sh '''#!/bin/bash
+                    set -x
+                    echo "📦 Setting up build environment..."
+                    
+                    # Create workspace directories
+                    mkdir -p "${WORKSPACE}/x86_64-Linux"
+                    mkdir -p "${WORKSPACE}/tmp"
+                    
+                    # Install core dependencies
+                    sudo apt-get update -y
+                    sudo apt-get install -y bc coreutils curl dos2unix jq moreutils wget
+                    
+                    # Get user agent
+                    curl -qfsSL 'https://raw.githubusercontent.com/pkgforge/devscripts/main/Misc/User-Agents/ua_firefox_macos_latest.txt' > "${WORKSPACE}/user_agent.txt"
+                    export USER_AGENT="$(cat ${WORKSPACE}/user_agent.txt)"
+                    echo "USER_AGENT=${USER_AGENT}" >> "${WORKSPACE}/env.properties"
+                '''
+            }
+        }
+
+        stage('Install Addons') {
+            steps {
+                sh '''#!/bin/bash
+                    set -x
+                    set +e  # Continue on error
+                    
+                    echo "📥 Installing rclone..."
+                    if ! sudo curl -qfsSL "https://bin.pkgforge.dev/$(uname -m)/rclone" -o "/usr/local/bin/rclone"; then
+                        echo "⚠️ Failed to download rclone (non-fatal)"
+                    fi
+                    
+                    if ! sudo chmod +x "/usr/local/bin/rclone"; then
+                        echo "⚠️ Failed to make rclone executable (non-fatal)"
+                    fi
+                    
+                    # Verify installation
+                    if command -v rclone >/dev/null; then
+                        echo "✔️ Rclone installed: $(rclone --version | head -n1)"
+                    fi
+                '''
+            }
+        }
+
+        stage('Build Packages') {
+            environment {
+                EXCLUDE_CACHED = "YES"
+                FORCE_REBUILD_ALL = "NO"
+            }
+            steps {
+                sh '''#!/bin/bash
+                    set -x
+                    echo "🏗️ Starting package builds..."
+                    
+                    # Download builder script
+                    curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" -o "${SYSTMP}/BUILDER.sh"
+                    chmod +x "${SYSTMP}/BUILDER.sh"
+                    
+                    # Execute with logging
+                    "${SYSTMP}/BUILDER.sh" | tee "${SYSTMP}/BUILD.log"
+                    
+                    # Process logs
+                    if grep -qi "completed" "${SYSTMP}/BUILD.log"; then
+                        echo "✅ Build completed successfully"
+                    else
+                        echo "❌ Build encountered errors"
+                        exit 1  // Fail the stage if build fails
+                    fi
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: '**/BUILD.log', allowEmptyArchive: true
+            sh '''#!/bin/bash
+                echo "🧹 Cleaning up temporary files..."
+                rm -rf "${SYSTMP}"  // Cleanup unless KEEP_LOGS is set
+            '''
+        }
+        success {
+            echo "🎉 Pipeline completed successfully"
+        }
+        failure {
+            echo "❌ Pipeline failed - check build logs"
+        }
     }
 }
