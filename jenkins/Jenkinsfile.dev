@@ -1,0 +1,8 @@
+node('jupiter-16G-1'){
+    stage('*** Phase 1 ***') {
+        //Using bash commands
+        sh '''#!/bin/bash
+            echo "Hello World !\n"
+         '''
+    }
+}
