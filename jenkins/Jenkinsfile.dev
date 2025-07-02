@@ -116,7 +116,7 @@ pipeline {
                 FORCE_REBUILD_ALL = "NO"
                 LOCAL_BIN = "${WORKSPACE}/.local/bin"
                 PKG_REPO = "bincache"
-                HOST_TRIPLET = "x86_64-Linux" // Set explicitly for your architecture
+                HOST_TRIPLET = "riscv64-Linux"  // Changed to match your architecture
             }
             steps {
                 sh '''#!/bin/bash
@@ -125,47 +125,48 @@ pipeline {
                     
                     # Create local installation directories
                     mkdir -p "${LOCAL_BIN}"
-                    export PATH="${LOCAL_BIN}:$PATH"
+                    export PATH="${LOCAL_BIN}:${PATH}"
                     
-                    # Download and patch builder script
+                    # Download builder script
                     curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" -o "${SYSTMP}/BUILDER.sh"
                     
-                    # patch to remove sudo requirements:
+                    # Apply critical patches
                     sed -i '
                         # Remove sudo commands
                         s/sudo //g
                         # Disable sudo checks
                         /require_sudo()/,/^}/d
                         # Change system paths to local paths
-                        s|/usr/local|${LOCAL_BIN}|g
-                        s|/etc/|${WORKSPACE}/.local/etc/|g
+                        s|/usr/local|'"${LOCAL_BIN}"'|g
+                        s|/etc/|'"${WORKSPACE}"'/.local/etc/|g
                     ' "${SYSTMP}/BUILDER.sh"
                     
-                    # Patch initialization script URL to use local version
-                    sed -i 's|setup_${HOST_TRIPLET_R}.sh|setup_local.sh|' "${SYSTMP}/BUILDER.sh"
-                    
                     # Create local setup script
-                    cat > "${SYSTMP}/setup_local.sh" <<'EOL'
-                    #!/bin/bash
-                    echo "[+] Using local setup (no sudo)"
-                    export CONTINUE="YES"
-                    export PREFIX="${WORKSPACE}/.local"
-                    export PATH="${PREFIX}/bin:$PATH"
-                    mkdir -p "${PREFIX}/bin"
-                    EOL
+                    cat > "${SYSTMP}/setup_local.sh" <<'EOF'
+        #!/bin/bash
+        echo "[+] Using local setup (no sudo)"
+        export CONTINUE="YES"
+        export PREFIX="'"${WORKSPACE}"'/.local"
+        export PATH="${PREFIX}/bin:${PATH}"
+        mkdir -p "${PREFIX}/bin"
+        EOF
+                    
                     chmod +x "${SYSTMP}/setup_local.sh"
+                    
+                    # Patch initialization script reference
+                    sed -i 's|setup_${HOST_TRIPLET_R}.sh|setup_local.sh|g' "${SYSTMP}/BUILDER.sh"
                     
                     dos2unix "${SYSTMP}/BUILDER.sh"
                     chmod +x "${SYSTMP}/BUILDER.sh"
                     
-                    # Set alternative paths
+                    # Set environment variables
                     export HOME="${WORKSPACE}"
                     export TMPDIR="${SYSTMP}"
                     
-                    # Execute with full logging
+                    # Execute build
                     "${SYSTMP}/BUILDER.sh" | tee "${SYSTMP}/BUILD.log"
                     
-                    # Process logs
+                    # Check result
                     if grep -qi "completed" "${SYSTMP}/BUILD.log"; then
                         echo "✅ Build completed successfully"
                     else
