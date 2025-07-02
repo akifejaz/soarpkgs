@@ -115,20 +115,54 @@ pipeline {
                 EXCLUDE_CACHED = "YES"
                 FORCE_REBUILD_ALL = "NO"
                 LOCAL_BIN = "${WORKSPACE}/.local/bin"
+                PKG_REPO = "bincache"
+                HOST_TRIPLET = "x86_64-Linux" // Set explicitly for your architecture
             }
             steps {
                 sh '''#!/bin/bash
-                    echo "export PATH=\\"${LOCAL_BIN}:\\$PATH\\"" >> ~/.bashrc
-                    source ~/.bashrc  # Apply to current session
-
                     set -x
                     echo "🏗️ Starting package builds..."
                     
-                    # Download builder script
+                    # Create local installation directories
+                    mkdir -p "${LOCAL_BIN}"
+                    export PATH="${LOCAL_BIN}:$PATH"
+                    
+                    # Download and patch builder script
                     curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" -o "${SYSTMP}/BUILDER.sh"
+                    
+                    # patch to remove sudo requirements:
+                    sed -i '
+                        # Remove sudo commands
+                        s/sudo //g
+                        # Disable sudo checks
+                        /require_sudo()/,/^}/d
+                        # Change system paths to local paths
+                        s|/usr/local|${LOCAL_BIN}|g
+                        s|/etc/|${WORKSPACE}/.local/etc/|g
+                    ' "${SYSTMP}/BUILDER.sh"
+                    
+                    # Patch initialization script URL to use local version
+                    sed -i 's|setup_${HOST_TRIPLET_R}.sh|setup_local.sh|' "${SYSTMP}/BUILDER.sh"
+                    
+                    # Create local setup script
+                    cat > "${SYSTMP}/setup_local.sh" <<'EOL'
+                    #!/bin/bash
+                    echo "[+] Using local setup (no sudo)"
+                    export CONTINUE="YES"
+                    export PREFIX="${WORKSPACE}/.local"
+                    export PATH="${PREFIX}/bin:$PATH"
+                    mkdir -p "${PREFIX}/bin"
+                    EOL
+                    chmod +x "${SYSTMP}/setup_local.sh"
+                    
+                    dos2unix "${SYSTMP}/BUILDER.sh"
                     chmod +x "${SYSTMP}/BUILDER.sh"
                     
-                    # Execute with logging
+                    # Set alternative paths
+                    export HOME="${WORKSPACE}"
+                    export TMPDIR="${SYSTMP}"
+                    
+                    # Execute with full logging
                     "${SYSTMP}/BUILDER.sh" | tee "${SYSTMP}/BUILD.log"
                     
                     # Process logs
@@ -136,7 +170,19 @@ pipeline {
                         echo "✅ Build completed successfully"
                     else
                         echo "❌ Build encountered errors"
-                        exit 1  // Fail the stage if build fails
+                        grep -i "error\\|fail" "${SYSTMP}/BUILD.log" || true
+                        exit 1
+                    fi
+                '''
+            }
+        }
+
+        stage('Post-Build Cleanup') {
+            steps {
+                sh '''#!/bin/bash
+                    echo "🧹 Cleaning up temporary files..."
+                    if [[ "${KEEP_LOGS}" != "YES" ]]; then
+                        rm -rf "${SYSTMP}"
                     fi
                 '''
             }
