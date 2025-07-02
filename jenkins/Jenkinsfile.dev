@@ -115,58 +115,30 @@ pipeline {
                 EXCLUDE_CACHED = "YES"
                 FORCE_REBUILD_ALL = "NO"
                 LOCAL_BIN = "${WORKSPACE}/.local/bin"
-                PKG_REPO = "bincache"
-                HOST_TRIPLET = "riscv64-Linux"  // Changed to match your architecture
             }
             steps {
                 sh '''#!/bin/bash
                     set -x
                     echo "🏗️ Starting package builds..."
                     
-                    # Create local installation directories
-                    mkdir -p "${LOCAL_BIN}"
-                    export PATH="${LOCAL_BIN}:${PATH}"
-                    
-                    # Download builder script
+                    # Download and patch builder script
                     curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" -o "${SYSTMP}/BUILDER.sh"
                     
-                    # Apply critical patches
-                    sed -i '
-                        # Remove sudo commands
-                        s/sudo //g
-                        # Disable sudo checks
-                        /require_sudo()/,/^}/d
-                        # Change system paths to local paths
-                        s|/usr/local|'"${LOCAL_BIN}"'|g
-                        s|/etc/|'"${WORKSPACE}"'/.local/etc/|g
-                    ' "${SYSTMP}/BUILDER.sh"
-                    
-                    # Create local setup script
-                    cat > "${SYSTMP}/setup_local.sh" <<'EOF'
-        #!/bin/bash
-        echo "[+] Using local setup (no sudo)"
-        export CONTINUE="YES"
-        export PREFIX="'"${WORKSPACE}"'/.local"
-        export PATH="${PREFIX}/bin:${PATH}"
-        mkdir -p "${PREFIX}/bin"
-        EOF
-                    
-                    chmod +x "${SYSTMP}/setup_local.sh"
-                    
-                    # Patch initialization script reference
-                    sed -i 's|setup_${HOST_TRIPLET_R}.sh|setup_local.sh|g' "${SYSTMP}/BUILDER.sh"
+                    # Patch the script to work without sudo
+                    sed -i 's/sudo //g' "${SYSTMP}/BUILDER.sh"
+                    sed -i '/require_sudo()/ {N;N;N;d;}' "${SYSTMP}/BUILDER.sh"  # Remove sudo check
                     
                     dos2unix "${SYSTMP}/BUILDER.sh"
                     chmod +x "${SYSTMP}/BUILDER.sh"
                     
-                    # Set environment variables
-                    export HOME="${WORKSPACE}"
-                    export TMPDIR="${SYSTMP}"
+                    # Set alternative install prefix
+                    export PREFIX="${WORKSPACE}/.local"
+                    export PATH="${PREFIX}/bin:$PATH"
                     
-                    # Execute build
+                    # Execute with full logging
                     "${SYSTMP}/BUILDER.sh" | tee "${SYSTMP}/BUILD.log"
                     
-                    # Check result
+                    # Process logs
                     if grep -qi "completed" "${SYSTMP}/BUILD.log"; then
                         echo "✅ Build completed successfully"
                     else
@@ -174,6 +146,10 @@ pipeline {
                         grep -i "error\\|fail" "${SYSTMP}/BUILD.log" || true
                         exit 1
                     fi
+                    
+                    # Sanitize logs
+                    cat "${SYSTMP}/BUILD.log" | ansi2txt > "${SYSTMP}/BUILD.clean.log"
+                    sed -i '/\(github_pat\|ghp_\|access_key_id\|token\|secret_access_key\|cloudflarestorage\)/Id' "${SYSTMP}/BUILD.clean.log"
                 '''
             }
         }
