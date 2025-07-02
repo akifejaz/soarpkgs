@@ -147,9 +147,6 @@ pipeline {
                         exit 1
                     fi
                     
-                    # Sanitize logs
-                    cat "${SYSTMP}/BUILD.log" | ansi2txt > "${SYSTMP}/BUILD.clean.log"
-                    sed -i '/\(github_pat\|ghp_\|access_key_id\|token\|secret_access_key\|cloudflarestorage\)/Id' "${SYSTMP}/BUILD.clean.log"
                 '''
             }
         }
