@@ -36,24 +36,38 @@ pipeline {
         }
 
         stage('Install Addons') {
+            environment {
+                LOCAL_BIN = "${WORKSPACE}/.local/bin"
+            }
             steps {
                 sh '''#!/bin/bash
                     set -x
                     set +e  # Continue on error
                     
-                    echo "📥 Installing rclone..."
-                    if ! sudo curl -qfsSL "https://bin.pkgforge.dev/$(uname -m)/rclone" -o "/usr/local/bin/rclone"; then
+                    echo "📥 Setting up local bin directory..."
+                    mkdir -p "${LOCAL_BIN}"
+                    
+                    # Install rclone locally
+                    echo "⬇️ Downloading rclone..."
+                    if ! curl -qfsSL "https://bin.pkgforge.dev/$(uname -m)/rclone" -o "${LOCAL_BIN}/rclone"; then
                         echo "⚠️ Failed to download rclone (non-fatal)"
+                    else
+                        chmod +x "${LOCAL_BIN}/rclone"
+                        echo "✔️ Rclone installed to ${LOCAL_BIN}"
+                        
+                        echo "export PATH=\\"${LOCAL_BIN}:\\$PATH\\"" >> ~/.bashrc
+                        source ~/.bashrc  # Apply to current session
+                        
+                        # Verify installation
+                        if command -v rclone >/dev/null; then
+                            echo "✅ Rclone ready: $(rclone --version | head -n1)"
+                        else
+                            echo "❌ Rclone not in PATH (may need new shell)"
+                        fi
                     fi
                     
-                    if ! sudo chmod +x "/usr/local/bin/rclone"; then
-                        echo "⚠️ Failed to make rclone executable (non-fatal)"
-                    fi
-                    
-                    # Verify installation
-                    if command -v rclone >/dev/null; then
-                        echo "✔️ Rclone installed: $(rclone --version | head -n1)"
-                    fi
+                    # Temporary PATH for current build
+                    export PATH="${LOCAL_BIN}:$PATH"
                 '''
             }
         }
@@ -62,9 +76,13 @@ pipeline {
             environment {
                 EXCLUDE_CACHED = "YES"
                 FORCE_REBUILD_ALL = "NO"
+                LOCAL_BIN = "${WORKSPACE}/.local/bin"
             }
             steps {
                 sh '''#!/bin/bash
+                    echo "export PATH=\\"${LOCAL_BIN}:\\$PATH\\"" >> ~/.bashrc
+                    source ~/.bashrc  # Apply to current session
+
                     set -x
                     echo "🏗️ Starting package builds..."
                     
