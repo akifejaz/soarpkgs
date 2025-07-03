@@ -80,7 +80,7 @@ pipeline {
                                         
                                         // Determine if cross-compiling
                                         def hostArch = sh(script: 'uname -m', returnStdout: true).trim()
-                                        if (HOST_TRIPLET != "${hostArch}-Linux") {
+                                        if (env.HOST_TRIPLET != "${hostArch}-Linux") {
                                             env.CROSS_COMPILING = "YES"
                                             env.ON_QEMU = "YES"
                                         } else {
@@ -89,13 +89,13 @@ pipeline {
                                         }
                                         
                                         // Setup platform-specific variables
-                                        if (HOST_TRIPLET.contains("aarch64")) {
+                                        if (env.HOST_TRIPLET.contains("aarch64")) {
                                             env.DOCKER_PLATFORM = "linux/arm64"
-                                        } else if (HOST_TRIPLET.contains("loongarch64")) {
+                                        } else if (env.HOST_TRIPLET.contains("loongarch64")) {
                                             env.DOCKER_PLATFORM = "linux/loong64"
-                                        } else if (HOST_TRIPLET.contains("riscv64")) {
+                                        } else if (env.HOST_TRIPLET.contains("riscv64")) {
                                             env.DOCKER_PLATFORM = "linux/riscv64"
-                                        } else if (HOST_TRIPLET.contains("x86_64")) {
+                                        } else if (env.HOST_TRIPLET.contains("x86_64")) {
                                             env.DOCKER_PLATFORM = "linux/amd64"
                                         }
                                         
@@ -130,8 +130,6 @@ pipeline {
             }
         }
     }
-
-    // ... post section remains the same ...
 }
 
 // Helper function to generate runner matrix
