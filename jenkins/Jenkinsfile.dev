@@ -16,10 +16,6 @@ pipeline {
         GHA_MODE = "JENKINS"
         USER_AGENT = "Jenkins-CI-Package-Builder/1.0"
         
-        // Credentials
-        RO_GHTOKEN = credentials('ro-ghtoken')
-        RO_GLTOKEN = credentials('ro-gltoken')
-        MINISIGN_KEY = credentials('minisign-key')
     }
 
     stages {
