@@ -145,7 +145,7 @@ def generateRunnerMatrix(host, ciInfra) {
         matrix = [[host: host, runner: ciInfra == "circle-ci" ? "${host.split('-')[0]}-linux-circle" : "ubuntu-latest"]]
     }
     
-    return writeJSON returnText: true, json: matrix
+    return writeJSON(returnText: true, json: matrix)
 }
 
 // Helper function to determine agent label
