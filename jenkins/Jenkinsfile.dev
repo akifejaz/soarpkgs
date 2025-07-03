@@ -1,26 +1,18 @@
 pipeline {
     agent { label 'jupiter-16G-1' }  // Using riscv machine (milk-v/jupiter)
-    
 
     environment {
-
         BUILD_TIMEOUT = "200"
-
-        // Target architecture/OS (options: ALL, aarch64-Linux, riscv64-Linux, x86_64-Linux)
         HOST = "riscv64-Linux"
         SBUILD_URL = "https://github.com/pkgforge/soarpkgs/blob/main/templates/minimal.SBUILD.yaml"
         PKG_FAMILY = "runner"
-        
-        // CI infrastructure to use (options: github, circle-ci, self-hosted)
         CI_INFRA = "self-hosted"
-        KEEP_LOGS = true
-        REBUILD = true
-        
-        // ===== System Configuration =====
+        KEEP_LOGS = "true"
+        REBUILD = "true"
         SYSTMP = "${env.WORKSPACE}/tmp"
         GHA_MODE = "JENKINS"
         USER_AGENT = "Jenkins-CI-Package-Builder/1.0"
-        
+
         RO_GHTOKEN = credentials('ro-ghtoken')
         RO_GLTOKEN = credentials('ro-gltoken')
         MINISIGN_KEY = credentials('minisign-key')
@@ -28,29 +20,25 @@ pipeline {
 
     stages {
         stage('Pre-Setup & Validation') {
-            agent { label 'jupiter-16G-1' }  // Using riscv machine (milk-v/jupiter)
+            agent { label 'jupiter-16G-1' }
             steps {
                 script {
-                    // Create temporary directory
                     sh """
-                    mkdir -p ${SYSTMP}
-                    mkdir -p ${SYSTMP}/_POD_BRIDGE
+                        mkdir -p ${env.SYSTMP}
+                        mkdir -p ${env.SYSTMP}/_POD_BRIDGE
                     """
-                    
-                    // Validate parameters
-                    if (params.SBUILD_URL.isEmpty()) {
+
+                    if (!env.SBUILD_URL) {
                         error("SBUILD_URL parameter is required")
                     }
-                    
-                    if (params.PKG_FAMILY.isEmpty()) {
+
+                    if (!env.PKG_FAMILY) {
                         error("PKG_FAMILY parameter is required")
                     }
-                    
-                    // Normalize package family name
-                    PKG_FAMILY_LOCAL = params.PKG_FAMILY.toLowerCase().replaceAll("\\s", "")
-                    
-                    // Determine build matrix
-                    def runnerMatrix = generateRunnerMatrix(params.HOST, params.CI_INFRA)
+
+                    def PKG_FAMILY_LOCAL = env.PKG_FAMILY.toLowerCase().replaceAll("\\s", "")
+
+                    def runnerMatrix = generateRunnerMatrix(env.HOST, env.CI_INFRA)
                     env.RUNNER_MATRIX = writeJSON returnText: true, json: runnerMatrix
                 }
             }
@@ -61,172 +49,158 @@ pipeline {
                 axes {
                     axis {
                         name 'PACKAGE'
-                        values env.RUNNER_MATRIX ? readJSON(text: env.RUNNER_MATRIX).collect { it.host } : []
+                        values readJSON(text: "${env.RUNNER_MATRIX}").collect { it.host }
                     }
                 }
-                agent { label 'jupiter-16G-1' }  // Using riscv machine (milk-v/jupiter)
+
+                agent { label 'jupiter-16G-1' }
+
                 stages {
                     stage('Setup Build Environment') {
                         environment {
-                            SYSTMP = "${WORKSPACE}/tmp"  
+                            SYSTMP = "${WORKSPACE}/tmp"
                             LOCAL_BIN = "${WORKSPACE}/.local/bin"
                         }
+
                         steps {
                             script {
-                                // Find the matrix entry for this host
                                 def matrixEntry = readJSON(text: env.RUNNER_MATRIX).find { it.host == PACKAGE }
                                 env.HOST_TRIPLET = matrixEntry.host
                                 env.RUNNER = matrixEntry.runner
-                                
-                                // Determine if cross-compiling
+
                                 def hostArch = sh(script: 'uname -m', returnStdout: true).trim()
-                                if (HOST_TRIPLET != "${hostArch}-Linux") {
+                                if (env.HOST_TRIPLET != "${hostArch}-Linux") {
                                     env.CROSS_COMPILING = "YES"
                                     env.ON_QEMU = "YES"
                                 } else {
                                     env.CROSS_COMPILING = "NO"
                                     env.ON_QEMU = "NO"
                                 }
-                                
-                                // Setup platform-specific variables
-                                if (HOST_TRIPLET.contains("aarch64")) {
+
+                                if (env.HOST_TRIPLET.contains("aarch64")) {
                                     env.DOCKER_PLATFORM = "linux/arm64"
-                                } else if (HOST_TRIPLET.contains("loongarch64")) {
+                                } else if (env.HOST_TRIPLET.contains("loongarch64")) {
                                     env.DOCKER_PLATFORM = "linux/loong64"
-                                } else if (HOST_TRIPLET.contains("riscv64")) {
+                                } else if (env.HOST_TRIPLET.contains("riscv64")) {
                                     env.DOCKER_PLATFORM = "linux/riscv64"
-                                } else if (HOST_TRIPLET.contains("x86_64")) {
+                                } else if (env.HOST_TRIPLET.contains("x86_64")) {
                                     env.DOCKER_PLATFORM = "linux/amd64"
                                 }
-                                
-                                // Install required dependencies
+
                                 sh """
-                                echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
-                                source ~/.bashrc
-                                sudo apt-get update -y
-                                sudo apt-get install -y \
-                                    bc coreutils curl dos2unix fdupes jq moreutils wget \
-                                    apt-transport-https apt-utils ca-certificates gnupg2 \
-                                    p7zip-full rename rsync software-properties-common \
-                                    texinfo tmux util-linux
-                                
-                                # Install yq for SBUILD parsing
-                                sudo curl -qfsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${HOST_TRIPLET.startsWith('aarch64') ? 'arm64' : 'amd64'}" \
-                                    -o "${LOCAL_BIN}/yq && chmod +x "${LOCAL_BIN}/yq"
-                                
-                                # Update PATH
-                                echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
-                                source ~/.bashrc                                   
-                                    
+                                    echo "export PATH=\\"${LOCAL_BIN}:\$PATH\\"" >> ~/.bashrc
+                                    source ~/.bashrc
+                                    sudo apt-get update -y
+                                    sudo apt-get install -y \
+                                        bc coreutils curl dos2unix fdupes jq moreutils wget \
+                                        apt-transport-https apt-utils ca-certificates gnupg2 \
+                                        p7zip-full rename rsync software-properties-common \
+                                        texinfo tmux util-linux
+
+                                    sudo curl -qfsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${env.HOST_TRIPLET.startsWith('aarch64') ? 'arm64' : 'amd64'}" \
+                                        -o "${LOCAL_BIN}/yq" && chmod +x "${LOCAL_BIN}/yq"
+                                    echo "export PATH=\\"${LOCAL_BIN}:\$PATH\\"" >> ~/.bashrc
+                                    source ~/.bashrc
                                 """
-                                
-                                // Setup Minisign
+
                                 sh """
-                                mkdir -p ${HOME}/.minisign
-                                echo "${MINISIGN_KEY}" > ${HOME}/.minisign/pkgforge.key
-                                chmod 600 ${HOME}/.minisign/pkgforge.key
+                                    mkdir -p ${HOME}/.minisign
+                                    echo "${MINISIGN_KEY}" > ${HOME}/.minisign/pkgforge.key
+                                    chmod 600 ${HOME}/.minisign/pkgforge.key
                                 """
                             }
                         }
                     }
 
-                stage('Process SBUILD') {
-                    steps {
-                        script {
-                            // Download and validate SBUILD file
-                            sh '''
-                            curl -w "(SBUILD) <== %{url}\\n" -fL "${SBUILD_URL}" -o "${SYSTMP}/SBUILD_INPUT"
-                            if [ ! -s "${SYSTMP}/SBUILD_INPUT" ] || [ $(stat -c%s "${SYSTMP}/SBUILD_INPUT") -le 10 ]; then
-                                echo "[✗] FATAL: Failed to fetch ${SBUILD_URL}"
-                                exit 1
-                            fi
-                            '''
-                            
-                            // Check host support in SBUILD
-                            def hostSupported = sh(
-                                script: '''
-                                yq e '.x_exec.host[]' "${SYSTMP}/SBUILD_INPUT" | \
-                                grep -v '^#' | \
-                                grep -qi "${HOST_TRIPLET,,}" && echo "YES" || echo "NO"
-                                ''',
-                                returnStdout: true
-                            ).trim()
-                            
-                            if (hostSupported == "NO") {
-                                error("SBUILD does not support ${HOST_TRIPLET} architecture")
+                    stage('Process SBUILD') {
+                        steps {
+                            script {
+                                sh '''
+                                    curl -w "(SBUILD) <== %{url}\\n" -fL "${SBUILD_URL}" -o "${SYSTMP}/SBUILD_INPUT"
+                                    if [ ! -s "${SYSTMP}/SBUILD_INPUT" ] || [ $(stat -c%s "${SYSTMP}/SBUILD_INPUT") -le 10 ]; then
+                                        echo "[✗] FATAL: Failed to fetch ${SBUILD_URL}"
+                                        exit 1
+                                    fi
+                                '''
+
+                                def hostSupported = sh(
+                                    script: '''
+                                        yq e '.x_exec.host[]' "${SYSTMP}/SBUILD_INPUT" | \
+                                        grep -v '^#' | grep -qi "${HOST_TRIPLET,,}" && echo "YES" || echo "NO"
+                                    ''',
+                                    returnStdout: true
+                                ).trim()
+
+                                if (hostSupported == "NO") {
+                                    error("SBUILD does not support ${env.HOST_TRIPLET} architecture")
+                                }
+
+                                def buildSystem = sh(
+                                    script: '''
+                                        yq '.x_exec.bsys' "${SYSTMP}/SBUILD_INPUT" | \
+                                        grep -v '^#' | grep -qi "docker://" && echo "DOCKER" || \
+                                        (grep -qi "host://" && echo "HOST" || echo "UNKNOWN")
+                                    ''',
+                                    returnStdout: true
+                                ).trim()
+
+                                if (buildSystem == "UNKNOWN") {
+                                    error("Unknown build system specified in SBUILD")
+                                }
+
+                                env.BUILD_SYSTEM = buildSystem
                             }
-                            
-                            // Determine build system
-                            def buildSystem = sh(
-                                script: '''
-                                yq '.x_exec.bsys' "${SYSTMP}/SBUILD_INPUT" | \
-                                grep -v '^#' | \
-                                grep -qi "docker://" && echo "DOCKER" || \
-                                (grep -qi "host://" && echo "HOST" || echo "UNKNOWN")
-                                ''',
-                                returnStdout: true
-                            ).trim()
-                            
-                            if (buildSystem == "UNKNOWN") {
-                                error("Unknown build system specified in SBUILD")
-                            }
-                            
-                            env.BUILD_SYSTEM = buildSystem
                         }
                     }
-                }
 
                     stage('Execute Build') {
                         steps {
                             script {
-                                // Prepare build environment
+                                def PKG_FAMILY_LOCAL = env.PKG_FAMILY.toLowerCase().replaceAll("\\s", "")
                                 sh """
-                                mkdir -p "${SYSTMP}/build_artifacts"
-                                curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" \
-                                    -o "${SYSTMP}/BUILDER.sh"
-                                chmod +x "${SYSTMP}/BUILDER.sh"
+                                    mkdir -p "${SYSTMP}/build_artifacts"
+                                    curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" \
+                                        -o "${SYSTMP}/BUILDER.sh"
+                                    chmod +x "${SYSTMP}/BUILDER.sh"
                                 """
-                                
-                                // Execute build based on system
+
                                 if (env.BUILD_SYSTEM == "DOCKER") {
                                     sh """
-                                    docker run --rm \
-                                        --platform "${DOCKER_PLATFORM}" \
-                                        -v "${SYSTMP}:/tmp" \
-                                        -v "${HOME}/.minisign:/root/.minisign" \
-                                        -e "RO_GHTOKEN=${RO_GHTOKEN}" \
-                                        -e "RO_GLTOKEN=${RO_GLTOKEN}" \
-                                        -e "MINISIGN_KEY=${MINISIGN_KEY}" \
-                                        -e "KEEP_LOGS=${params.KEEP_LOGS}" \
-                                        -e "PKG_FAMILY_LOCAL=${PKG_FAMILY_LOCAL}" \
-                                        -e "REBUILD=${params.REBUILD}" \
-                                        -e "HOST_TRIPLET=${HOST_TRIPLET}" \
-                                        ubuntu:latest \
-                                        /bin/bash -c "/tmp/BUILDER.sh ${params.SBUILD_URL}"
+                                        docker run --rm \
+                                            --platform "${DOCKER_PLATFORM}" \
+                                            -v "${SYSTMP}:/tmp" \
+                                            -v "${HOME}/.minisign:/root/.minisign" \
+                                            -e "RO_GHTOKEN=${RO_GHTOKEN}" \
+                                            -e "RO_GLTOKEN=${RO_GLTOKEN}" \
+                                            -e "MINISIGN_KEY=${MINISIGN_KEY}" \
+                                            -e "KEEP_LOGS=${KEEP_LOGS}" \
+                                            -e "PKG_FAMILY_LOCAL=${PKG_FAMILY_LOCAL}" \
+                                            -e "REBUILD=${REBUILD}" \
+                                            -e "HOST_TRIPLET=${HOST_TRIPLET}" \
+                                            ubuntu:latest \
+                                            /bin/bash -c "/tmp/BUILDER.sh ${SBUILD_URL}"
                                     """
                                 } else {
-                                    // Host build
                                     sh """
-                                    export RO_GHTOKEN="${RO_GHTOKEN}"
-                                    export RO_GLTOKEN="${RO_GLTOKEN}"
-                                    export MINISIGN_KEY="${MINISIGN_KEY}"
-                                    export KEEP_LOGS="${params.KEEP_LOGS}"
-                                    export PKG_FAMILY_LOCAL="${PKG_FAMILY_LOCAL}"
-                                    export REBUILD="${params.REBUILD}"
-                                    export HOST_TRIPLET="${HOST_TRIPLET}"
-                                    export BUILD_SYSTEM="${env.BUILD_SYSTEM}"
-                                    
-                                    "${SYSTMP}/BUILDER.sh" "${params.SBUILD_URL}"
+                                        export RO_GHTOKEN="${RO_GHTOKEN}"
+                                        export RO_GLTOKEN="${RO_GLTOKEN}"
+                                        export MINISIGN_KEY="${MINISIGN_KEY}"
+                                        export KEEP_LOGS="${KEEP_LOGS}"
+                                        export PKG_FAMILY_LOCAL="${PKG_FAMILY_LOCAL}"
+                                        export REBUILD="${REBUILD}"
+                                        export HOST_TRIPLET="${HOST_TRIPLET}"
+                                        export BUILD_SYSTEM="${BUILD_SYSTEM}"
+
+                                        "${SYSTMP}/BUILDER.sh" "${SBUILD_URL}"
                                     """
                                 }
-                                
-                                // Archive artifacts
+
                                 sh """
-                                if [ -f "${SYSTMP}/BUILD_ARTIFACTS.zstd" ]; then
-                                    mkdir -p "${WORKSPACE}/artifacts/${HOST_TRIPLET}"
-                                    cp "${SYSTMP}/BUILD_ARTIFACTS.zstd" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
-                                    cp "${SYSTMP}/BUILD.log" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
-                                fi
+                                    if [ -f "${SYSTMP}/BUILD_ARTIFACTS.zstd" ]; then
+                                        mkdir -p "${WORKSPACE}/artifacts/${HOST_TRIPLET}"
+                                        cp "${SYSTMP}/BUILD_ARTIFACTS.zstd" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
+                                        cp "${SYSTMP}/BUILD.log" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
+                                    fi
                                 """
                             }
                         }
@@ -239,22 +213,20 @@ pipeline {
     post {
         always {
             script {
-                // Archive artifacts if they exist
                 if (fileExists("${WORKSPACE}/artifacts")) {
                     archiveArtifacts artifacts: "artifacts/**", allowEmptyArchive: true
                 }
-                
-                // Clean up if not keeping logs
-                if (!params.KEEP_LOGS.toBoolean()) {
+
+                if (!KEEP_LOGS.toBoolean()) {
                     sh "rm -rf ${SYSTMP}"
                 }
             }
         }
-        
+
         success {
             echo "Build completed successfully for all architectures"
         }
-        
+
         failure {
             echo "Build failed for one or more architectures"
         }
@@ -264,7 +236,7 @@ pipeline {
 // Helper function to generate runner matrix
 def generateRunnerMatrix(host, ciInfra) {
     def matrix = []
-    
+
     if (host == "ALL") {
         matrix = [
             [host: "aarch64-Linux", runner: "ubuntu-24.04-arm"],
@@ -273,6 +245,6 @@ def generateRunnerMatrix(host, ciInfra) {
     } else {
         matrix = [[host: host, runner: ciInfra == "circle-ci" ? "${host.split('-')[0]}-linux-circle" : "ubuntu-latest"]]
     }
-    
+
     return matrix
 }
