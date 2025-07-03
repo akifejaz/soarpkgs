@@ -64,11 +64,7 @@ pipeline {
                         values env.RUNNER_MATRIX ? readJSON(text: env.RUNNER_MATRIX).collect { it.host } : []
                     }
                 }
-                agent { 
-                    label "${PACKAGE.contains('aarch64') ? 'arm64-node' : 
-                          PACKAGE.contains('riscv64') ? 'riscv64-node' : 
-                          'amd64-node'}" 
-                }
+                agent { label 'jupiter-16G-1' }  // Using riscv machine (milk-v/jupiter)
                 stages {
                     stage('Setup Build Environment') {
                         environment {
