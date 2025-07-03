@@ -58,72 +58,79 @@ pipeline {
         }
 
         stage('Build Packages') {
-            matrix {
-                axes {
-                    axis {
-                        name 'PACKAGE'
-                        values readJSON(text: env.RUNNER_MATRIX).collect { it.host }
-                    }
-                }
-                agent { 
-                    label determineAgentLabel(PACKAGE) 
-                }
-                stages {
-                    stage('Setup Build Environment') {
-                        steps {
-                            script {
-                                // Find the matrix entry for this host
-                                def matrixEntry = readJSON(text: env.RUNNER_MATRIX).find { it.host == PACKAGE }
-                                env.HOST_TRIPLET = matrixEntry.host
-                                env.RUNNER = matrixEntry.runner
-                                
-                                // Determine if cross-compiling
-                                def hostArch = sh(script: 'uname -m', returnStdout: true).trim()
-                                if (HOST_TRIPLET != "${hostArch}-Linux") {
-                                    env.CROSS_COMPILING = "YES"
-                                    env.ON_QEMU = "YES"
-                                } else {
-                                    env.CROSS_COMPILING = "NO"
-                                    env.ON_QEMU = "NO"
-                                }
-                                
-                                // Setup platform-specific variables
-                                if (HOST_TRIPLET.contains("aarch64")) {
-                                    env.DOCKER_PLATFORM = "linux/arm64"
-                                } else if (HOST_TRIPLET.contains("loongarch64")) {
-                                    env.DOCKER_PLATFORM = "linux/loong64"
-                                } else if (HOST_TRIPLET.contains("riscv64")) {
-                                    env.DOCKER_PLATFORM = "linux/riscv64"
-                                } else if (HOST_TRIPLET.contains("x86_64")) {
-                                    env.DOCKER_PLATFORM = "linux/amd64"
-                                }
-                                
-                                // Install required dependencies
-                                sh '''
-                                sudo apt-get update -y
-                                sudo apt-get install -y \
-                                    bc coreutils curl dos2unix fdupes jq moreutils wget \
-                                    apt-transport-https apt-utils ca-certificates gnupg2 \
-                                    p7zip-full rename rsync software-properties-common \
-                                    texinfo tmux util-linux
-                                
-                                # Install yq for SBUILD parsing
-                                sudo curl -qfsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${HOST_TRIPLET.startsWith('aarch64') ? 'arm64' : 'amd64'}" \
-                                    -o /usr/local/bin/yq && \
-                                    sudo chmod +x /usr/local/bin/yq
-                                '''
-                                
-                                // Setup Minisign
-                                sh '''
-                                mkdir -p ${HOME}/.minisign
-                                echo "${MINISIGN_KEY}" > ${HOME}/.minisign/pkgforge.key
-                                chmod 600 ${HOME}/.minisign/pkgforge.key
-                                '''
+            steps {
+                script {
+                    // Calculate the matrix values first
+                    def matrixValues = readJSON(text: env.RUNNER_MATRIX).collect { it.host }
+                    
+                    // Then use them in the matrix
+                    matrix {
+                        axes {
+                            axis {
+                                name 'PACKAGE'
+                                values matrixValues
                             }
                         }
+                        agent { 
+                            label determineAgentLabel(PACKAGE) 
+                        }
+                        stages {
+                            stage('Setup Build Environment') {
+                                steps {
+                                    script {
+                                        // Find the matrix entry for this host
+                                        def matrixEntry = readJSON(text: env.RUNNER_MATRIX).find { it.host == PACKAGE }
+                                        env.HOST_TRIPLET = matrixEntry.host
+                                        env.RUNNER = matrixEntry.runner
+                                        
+                                        // Determine if cross-compiling
+                                        def hostArch = sh(script: 'uname -m', returnStdout: true).trim()
+                                        if (HOST_TRIPLET != "${hostArch}-Linux") {
+                                            env.CROSS_COMPILING = "YES"
+                                            env.ON_QEMU = "YES"
+                                        } else {
+                                            env.CROSS_COMPILING = "NO"
+                                            env.ON_QEMU = "NO"
+                                        }
+                                        
+                                        // Setup platform-specific variables
+                                        if (HOST_TRIPLET.contains("aarch64")) {
+                                            env.DOCKER_PLATFORM = "linux/arm64"
+                                        } else if (HOST_TRIPLET.contains("loongarch64")) {
+                                            env.DOCKER_PLATFORM = "linux/loong64"
+                                        } else if (HOST_TRIPLET.contains("riscv64")) {
+                                            env.DOCKER_PLATFORM = "linux/riscv64"
+                                        } else if (HOST_TRIPLET.contains("x86_64")) {
+                                            env.DOCKER_PLATFORM = "linux/amd64"
+                                        }
+                                        
+                                        // Install required dependencies
+                                        sh '''
+                                        sudo apt-get update -y
+                                        sudo apt-get install -y \
+                                            bc coreutils curl dos2unix fdupes jq moreutils wget \
+                                            apt-transport-https apt-utils ca-certificates gnupg2 \
+                                            p7zip-full rename rsync software-properties-common \
+                                            texinfo tmux util-linux
+                                        
+                                        # Install yq for SBUILD parsing
+                                        sudo curl -qfsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${HOST_TRIPLET.startsWith('aarch64') ? 'arm64' : 'amd64'}" \
+                                            -o /usr/local/bin/yq && \
+                                            sudo chmod +x /usr/local/bin/yq
+                                        '''
+                                        
+                                        // Setup Minisign
+                                        sh '''
+                                        mkdir -p ${HOME}/.minisign
+                                        echo "${MINISIGN_KEY}" > ${HOME}/.minisign/pkgforge.key
+                                        chmod 600 ${HOME}/.minisign/pkgforge.key
+                                        '''
+                                    }
+                                }
+                            }
+                            // ... rest of the stages ...
+                        }
                     }
-
-                    // ... rest of the stages remain the same ...
                 }
             }
         }
