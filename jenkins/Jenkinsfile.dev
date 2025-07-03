@@ -1,181 +1,282 @@
 pipeline {
     agent { label 'jupiter-16G-1' }  // Using riscv machine (milk-v/jupiter)
+    
 
     environment {
-        SYSTMP = "${WORKSPACE}/tmp"  
-        USER_AGENT = "Mozilla/5.0"  
 
-        EXCLUDE_CACHED = "YES"
-        FORCE_REBUILD_ALL = "NO"
-        KEEP_LOGS = "NO"
-        NOTIFY_DISCORD = "NO"
+        BUILD_TIMEOUT = "200"
+
+        // Target architecture/OS (options: ALL, aarch64-Linux, riscv64-Linux, x86_64-Linux)
+        HOST = "riscv64-Linux"
+        SBUILD_URL = "https://github.com/pkgforge/soarpkgs/blob/main/templates/minimal.SBUILD.yaml"
+        PKG_FAMILY = "runner"
+        
+        // CI infrastructure to use (options: github, circle-ci, self-hosted)
+        CI_INFRA = "self-hosted"
+        KEEP_LOGS = true
+        REBUILD = true
+        
+        // ===== System Configuration =====
+        SYSTMP = "${env.WORKSPACE}/tmp"
+        GHA_MODE = "JENKINS"
+        USER_AGENT = "Jenkins-CI-Package-Builder/1.0"
+        
+        RO_GHTOKEN = credentials('ro-ghtoken')
+        RO_GLTOKEN = credentials('ro-gltoken')
+        MINISIGN_KEY = credentials('minisign-key')
     }
 
     stages {
-        stage('Clone Repository') {
+        stage('Pre-Setup & Validation') {
+            agent { label 'jupiter-16G-1' }  // Using riscv machine (milk-v/jupiter)
             steps {
-                checkout scm
-                sh '''#!/bin/bash
-                    mkdir -p "${WORKSPACE}/main/x86_64-Linux"
-                    mkdir -p "${SYSTMP}"
-                '''
-            }
-        }
-
-        stage('Setup Environment') {
-            steps {
-                sh '''#!/bin/bash
-                    set -x
-                    echo "📦 Setting up build environment..."
+                script {
+                    // Create temporary directory
+                    sh """
+                    mkdir -p ${SYSTMP}
+                    mkdir -p ${SYSTMP}/_POD_BRIDGE
+                    """
                     
-                    # Install core dependencies (without sudo)
-                    apt-get update -y && apt-get install -y \
-                        bc coreutils curl dos2unix fdupes jq moreutils wget \
-                        apt-transport-https apt-utils ca-certificates gnupg2 \
-                        p7zip-full rename rsync software-properties-common texinfo tmux util-linux
-                    
-                    export SYSTMP="${WORKSPACE}/tmp"
-                    mkdir -p "${SYSTMP}"
-                    echo "SYSTMP=${SYSTMP}" > "${WORKSPACE}/env.properties"
-                    
-                    # Set user agent
-                    USER_AGENT="$(curl -qfsSL 'https://raw.githubusercontent.com/pkgforge/devscripts/main/Misc/User-Agents/ua_firefox_macos_latest.txt')"
-                    echo "USER_AGENT=${USER_AGENT}" >> "${WORKSPACE}/env.properties"
-                    
-                    # Timezone setup
-                    # TODO 
-    
-                '''
-            }
-        }
-
-        stage('Install Addons') {
-            environment {
-                SYSTMP = "${WORKSPACE}/tmp"  
-                LOCAL_BIN = "${WORKSPACE}/.local/bin"
-            }
-            steps {
-                sh '''#!/bin/bash
-                    set -x
-                    set +e
-                    
-                    echo "📥 Installing tools to ${LOCAL_BIN}..."
-                    mkdir -p "${LOCAL_BIN}"
-                    
-                    # Install rclone locally
-                    curl -qfsSL "${BIN_CACHE_URL}/$(uname -m)/rclone" -o "${LOCAL_BIN}/rclone"
-                    chmod +x "${LOCAL_BIN}/rclone"
-                    
-                    # Install notify tool
-                    curl -qfsSL "${BIN_CACHE_URL}/$(uname -m)/notify" -o "${LOCAL_BIN}/notify"
-                    chmod +x "${LOCAL_BIN}/notify"
-                    
-                    # Setup Minisign
-                    mkdir -p "${WORKSPACE}/.minisign"
-                    echo "$MINISIGN_KEY" > "${WORKSPACE}/.minisign/pkgforge.key"
-                    
-                    # Update PATH
-                    echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
-                    source ~/.bashrc
-                '''
-            }
-        }
-
-        stage('Sanity Checks') {
-            environment {
-                SYSTMP = "${WORKSPACE}/tmp"  
-                LOCAL_BIN = "${WORKSPACE}/.local/bin"
-            }
-            steps {
-                sh '''#!/bin/bash
-                    echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
-                    source ~/.bashrc
-                    set +e
-                    echo "🔍 Running pre-build checks..."
-                    
-                    # Package count verification
-                    PKG_COUNT=$(curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/SBUILD_LIST.json" | jq -r '.[] | .pkg_family' | wc -l | tr -d '[:space:]')
-                    if [[ "${PKG_COUNT}" -le 10 ]]; then
-                        echo "❌ FATAL: Too few Packages to Build (${PKG_COUNT})"
-                        exit 1
-                    fi
-                    
-                    # Dependency verification
-                    command -v rclone >/dev/null || {
-                        echo "❌ rclone not found in PATH"
-                        exit 1
+                    // Validate parameters
+                    if (params.SBUILD_URL.isEmpty()) {
+                        error("SBUILD_URL parameter is required")
                     }
-                '''
+                    
+                    if (params.PKG_FAMILY.isEmpty()) {
+                        error("PKG_FAMILY parameter is required")
+                    }
+                    
+                    // Normalize package family name
+                    PKG_FAMILY_LOCAL = params.PKG_FAMILY.toLowerCase().replaceAll("\\s", "")
+                    
+                    // Determine build matrix
+                    def runnerMatrix = generateRunnerMatrix(params.HOST, params.CI_INFRA)
+                    env.RUNNER_MATRIX = writeJSON returnText: true, json: runnerMatrix
+                }
             }
         }
 
         stage('Build Packages') {
-            environment {
-                SYSTMP = "${WORKSPACE}/tmp"  
-                EXCLUDE_CACHED = "YES"
-                FORCE_REBUILD_ALL = "NO"
-                LOCAL_BIN = "${WORKSPACE}/.local/bin"
-            }
-            steps {
-                sh '''#!/bin/bash
-                    set -x
-                    echo "🏗️ Starting package builds..."
-                    
-                    # Download and patch builder script
-                    curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" -o "${SYSTMP}/BUILDER.sh"
-                    
-                    # Patch the script to work without sudo
-                    sed -i 's/sudo //g' "${SYSTMP}/BUILDER.sh"
-                    sed -i '/require_sudo()/ {N;N;N;d;}' "${SYSTMP}/BUILDER.sh"  # Remove sudo check
-                    
-                    dos2unix "${SYSTMP}/BUILDER.sh"
-                    chmod +x "${SYSTMP}/BUILDER.sh"
-                    
-                    # Set alternative install prefix
-                    export PREFIX="${WORKSPACE}/.local"
-                    export PATH="${PREFIX}/bin:$PATH"
-                    
-                    # Execute with full logging
-                    "${SYSTMP}/BUILDER.sh" | tee "${SYSTMP}/BUILD.log"
-                    
-                    # Process logs
-                    if grep -qi "completed" "${SYSTMP}/BUILD.log"; then
-                        echo "✅ Build completed successfully"
-                    else
-                        echo "❌ Build encountered errors"
-                        grep -i "error\\|fail" "${SYSTMP}/BUILD.log" || true
-                        exit 1
-                    fi
-                    
-                '''
-            }
-        }
+            matrix {
+                axes {
+                    axis {
+                        name 'PACKAGE'
+                        values env.RUNNER_MATRIX ? readJSON(text: env.RUNNER_MATRIX).collect { it.host } : []
+                    }
+                }
+                agent { 
+                    label "${PACKAGE.contains('aarch64') ? 'arm64-node' : 
+                          PACKAGE.contains('riscv64') ? 'riscv64-node' : 
+                          'amd64-node'}" 
+                }
+                stages {
+                    stage('Setup Build Environment') {
+                        environment {
+                            SYSTMP = "${WORKSPACE}/tmp"  
+                            LOCAL_BIN = "${WORKSPACE}/.local/bin"
+                        }
+                        steps {
+                            script {
+                                // Find the matrix entry for this host
+                                def matrixEntry = readJSON(text: env.RUNNER_MATRIX).find { it.host == PACKAGE }
+                                env.HOST_TRIPLET = matrixEntry.host
+                                env.RUNNER = matrixEntry.runner
+                                
+                                // Determine if cross-compiling
+                                def hostArch = sh(script: 'uname -m', returnStdout: true).trim()
+                                if (HOST_TRIPLET != "${hostArch}-Linux") {
+                                    env.CROSS_COMPILING = "YES"
+                                    env.ON_QEMU = "YES"
+                                } else {
+                                    env.CROSS_COMPILING = "NO"
+                                    env.ON_QEMU = "NO"
+                                }
+                                
+                                // Setup platform-specific variables
+                                if (HOST_TRIPLET.contains("aarch64")) {
+                                    env.DOCKER_PLATFORM = "linux/arm64"
+                                } else if (HOST_TRIPLET.contains("loongarch64")) {
+                                    env.DOCKER_PLATFORM = "linux/loong64"
+                                } else if (HOST_TRIPLET.contains("riscv64")) {
+                                    env.DOCKER_PLATFORM = "linux/riscv64"
+                                } else if (HOST_TRIPLET.contains("x86_64")) {
+                                    env.DOCKER_PLATFORM = "linux/amd64"
+                                }
+                                
+                                // Install required dependencies
+                                sh """
+                                echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
+                                source ~/.bashrc
+                                sudo apt-get update -y
+                                sudo apt-get install -y \
+                                    bc coreutils curl dos2unix fdupes jq moreutils wget \
+                                    apt-transport-https apt-utils ca-certificates gnupg2 \
+                                    p7zip-full rename rsync software-properties-common \
+                                    texinfo tmux util-linux
+                                
+                                # Install yq for SBUILD parsing
+                                sudo curl -qfsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${HOST_TRIPLET.startsWith('aarch64') ? 'arm64' : 'amd64'}" \
+                                    -o "${LOCAL_BIN}/yq && chmod +x "${LOCAL_BIN}/yq"
+                                
+                                # Update PATH
+                                echo "export PATH=\"${LOCAL_BIN}:\\$PATH\"" >> ~/.bashrc
+                                source ~/.bashrc                                   
+                                    
+                                """
+                                
+                                // Setup Minisign
+                                sh """
+                                mkdir -p ${HOME}/.minisign
+                                echo "${MINISIGN_KEY}" > ${HOME}/.minisign/pkgforge.key
+                                chmod 600 ${HOME}/.minisign/pkgforge.key
+                                """
+                            }
+                        }
+                    }
 
-        stage('Post-Build Cleanup') {
-            steps {
-                sh '''#!/bin/bash
-                    echo "🧹 Cleaning up temporary files..."
-                    if [[ "${KEEP_LOGS}" != "YES" ]]; then
-                        rm -rf "${SYSTMP}"
-                    fi
-                '''
+                    stage('Process SBUILD') {
+                        steps {
+                            script {
+                                // Download and validate SBUILD file
+                                sh """
+                                curl -w "(SBUILD) <== %{url}\\n" -fL "${params.SBUILD_URL}" -o "${SYSTMP}/SBUILD_INPUT"
+                                if [ ! -s "${SYSTMP}/SBUILD_INPUT" ] || [ $(stat -c%s "${SYSTMP}/SBUILD_INPUT") -le 10 ]; then
+                                    echo "[✗] FATAL: Failed to fetch ${params.SBUILD_URL}"
+                                    exit 1
+                                fi
+                                """
+                                
+                                // Check host support in SBUILD
+                                def hostSupported = sh(
+                                    script: """
+                                    yq e '.x_exec.host[]' "${SYSTMP}/SBUILD_INPUT" | \
+                                    grep -v '^#' | \
+                                    grep -qi "${HOST_TRIPLET.toLowerCase()}" && echo "YES" || echo "NO"
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+                                
+                                if (hostSupported == "NO") {
+                                    error("SBUILD does not support ${HOST_TRIPLET} architecture")
+                                }
+                                
+                                // Determine build system
+                                def buildSystem = sh(
+                                    script: """
+                                    yq '.x_exec.bsys' "${SYSTMP}/SBUILD_INPUT" | \
+                                    grep -v '^#' | \
+                                    grep -qi "docker://" && echo "DOCKER" || \
+                                    (grep -qi "host://" && echo "HOST" || echo "UNKNOWN")
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+                                
+                                if (buildSystem == "UNKNOWN") {
+                                    error("Unknown build system specified in SBUILD")
+                                }
+                                
+                                env.BUILD_SYSTEM = buildSystem
+                            }
+                        }
+                    }
+
+                    stage('Execute Build') {
+                        steps {
+                            script {
+                                // Prepare build environment
+                                sh """
+                                mkdir -p "${SYSTMP}/build_artifacts"
+                                curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" \
+                                    -o "${SYSTMP}/BUILDER.sh"
+                                chmod +x "${SYSTMP}/BUILDER.sh"
+                                """
+                                
+                                // Execute build based on system
+                                if (env.BUILD_SYSTEM == "DOCKER") {
+                                    sh """
+                                    docker run --rm \
+                                        --platform "${DOCKER_PLATFORM}" \
+                                        -v "${SYSTMP}:/tmp" \
+                                        -v "${HOME}/.minisign:/root/.minisign" \
+                                        -e "RO_GHTOKEN=${RO_GHTOKEN}" \
+                                        -e "RO_GLTOKEN=${RO_GLTOKEN}" \
+                                        -e "MINISIGN_KEY=${MINISIGN_KEY}" \
+                                        -e "KEEP_LOGS=${params.KEEP_LOGS}" \
+                                        -e "PKG_FAMILY_LOCAL=${PKG_FAMILY_LOCAL}" \
+                                        -e "REBUILD=${params.REBUILD}" \
+                                        -e "HOST_TRIPLET=${HOST_TRIPLET}" \
+                                        ubuntu:latest \
+                                        /bin/bash -c "/tmp/BUILDER.sh ${params.SBUILD_URL}"
+                                    """
+                                } else {
+                                    // Host build
+                                    sh """
+                                    export RO_GHTOKEN="${RO_GHTOKEN}"
+                                    export RO_GLTOKEN="${RO_GLTOKEN}"
+                                    export MINISIGN_KEY="${MINISIGN_KEY}"
+                                    export KEEP_LOGS="${params.KEEP_LOGS}"
+                                    export PKG_FAMILY_LOCAL="${PKG_FAMILY_LOCAL}"
+                                    export REBUILD="${params.REBUILD}"
+                                    export HOST_TRIPLET="${HOST_TRIPLET}"
+                                    export BUILD_SYSTEM="${env.BUILD_SYSTEM}"
+                                    
+                                    "${SYSTMP}/BUILDER.sh" "${params.SBUILD_URL}"
+                                    """
+                                }
+                                
+                                // Archive artifacts
+                                sh """
+                                if [ -f "${SYSTMP}/BUILD_ARTIFACTS.zstd" ]; then
+                                    mkdir -p "${WORKSPACE}/artifacts/${HOST_TRIPLET}"
+                                    cp "${SYSTMP}/BUILD_ARTIFACTS.zstd" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
+                                    cp "${SYSTMP}/BUILD.log" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
+                                fi
+                                """
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
     post {
         always {
-            archiveArtifacts artifacts: '**/BUILD.log', allowEmptyArchive: true
-            sh '''#!/bin/bash
-                echo "🧹 Cleaning up temporary files..."
-                rm -rf "${SYSTMP}"  // Cleanup unless KEEP_LOGS is set
-            '''
+            script {
+                // Archive artifacts if they exist
+                if (fileExists("${WORKSPACE}/artifacts")) {
+                    archiveArtifacts artifacts: "artifacts/**", allowEmptyArchive: true
+                }
+                
+                // Clean up if not keeping logs
+                if (!params.KEEP_LOGS.toBoolean()) {
+                    sh "rm -rf ${SYSTMP}"
+                }
+            }
         }
+        
         success {
-            echo "🎉 Pipeline completed successfully"
+            echo "Build completed successfully for all architectures"
         }
+        
         failure {
-            echo "❌ Pipeline failed - check build logs"
+            echo "Build failed for one or more architectures"
         }
     }
+}
+
+// Helper function to generate runner matrix
+def generateRunnerMatrix(host, ciInfra) {
+    def matrix = []
+    
+    if (host == "ALL") {
+        matrix = [
+            [host: "aarch64-Linux", runner: "ubuntu-24.04-arm"],
+            [host: "x86_64-Linux", runner: "ubuntu-latest"]
+        ]
+    } else {
+        matrix = [[host: host, runner: ciInfra == "circle-ci" ? "${host.split('-')[0]}-linux-circle" : "ubuntu-latest"]]
+    }
+    
+    return matrix
 }
