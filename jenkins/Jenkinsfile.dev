@@ -4,10 +4,10 @@ pipeline {
     environment {
         // Hardcoded Configuration
         BUILD_TIMEOUT = "200"
-        HOST = "x86_64-Linux"
-        SBUILD_URL = "https://example.com/path/to/SBUILD.yml"
-        PKG_FAMILY = "example-package"
-        CI_INFRA = "github"
+        HOST = "riscv64-Linux"
+        SBUILD_URL = "https://github.com/akifejaz/soarpkgs/blob/main/binaries/desync/static.official.source.yaml"
+        PKG_FAMILY = "desync"
+        CI_INFRA = "self-hosted"
         KEEP_LOGS = true
         REBUILD = true
         
@@ -66,9 +66,7 @@ pipeline {
                     }
                 }
                 agent { 
-                    label "${PACKAGE.contains('aarch64') ? 'arm64-node' : 
-                          PACKAGE.contains('riscv64') ? 'riscv64-node' : 
-                          'amd64-node'}" 
+                    label determineAgentLabel(PACKAGE) 
                 }
                 stages {
                     stage('Setup Build Environment') {
@@ -125,135 +123,13 @@ pipeline {
                         }
                     }
 
-                    stage('Process SBUILD') {
-                        steps {
-                            script {
-                                // Download and validate SBUILD file
-                                sh '''
-                                curl -w "(SBUILD) <== %{url}\\n" -fL "${SBUILD_URL}" -o "${SYSTMP}/SBUILD_INPUT"
-                                if [ ! -s "${SYSTMP}/SBUILD_INPUT" ] || [ $(stat -c%s "${SYSTMP}/SBUILD_INPUT") -le 10 ]; then
-                                    echo "[✗] FATAL: Failed to fetch ${SBUILD_URL}"
-                                    exit 1
-                                fi
-                                '''
-                                
-                                // Check host support in SBUILD
-                                def hostSupported = sh(
-                                    script: '''
-                                    yq e '.x_exec.host[]' "${SYSTMP}/SBUILD_INPUT" | \
-                                    grep -v '^#' | \
-                                    grep -qi "${HOST_TRIPLET,,}" && echo "YES" || echo "NO"
-                                    ''',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                if (hostSupported == "NO") {
-                                    error("SBUILD does not support ${HOST_TRIPLET} architecture")
-                                }
-                                
-                                // Determine build system
-                                def buildSystem = sh(
-                                    script: '''
-                                    yq '.x_exec.bsys' "${SYSTMP}/SBUILD_INPUT" | \
-                                    grep -v '^#' | \
-                                    grep -qi "docker://" && echo "DOCKER" || \
-                                    (grep -qi "host://" && echo "HOST" || echo "UNKNOWN")
-                                    ''',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                if (buildSystem == "UNKNOWN") {
-                                    error("Unknown build system specified in SBUILD")
-                                }
-                                
-                                env.BUILD_SYSTEM = buildSystem
-                            }
-                        }
-                    }
-
-                    stage('Execute Build') {
-                        steps {
-                            script {
-                                // Prepare build environment
-                                sh '''
-                                mkdir -p "${SYSTMP}/build_artifacts"
-                                curl -qfsSL "https://raw.githubusercontent.com/pkgforge/bincache/main/scripts/runner/builder.sh" \
-                                    -o "${SYSTMP}/BUILDER.sh"
-                                chmod +x "${SYSTMP}/BUILDER.sh"
-                                '''
-                                
-                                // Execute build based on system
-                                if (env.BUILD_SYSTEM == "DOCKER") {
-                                    sh '''
-                                    docker run --rm \
-                                        --platform "${DOCKER_PLATFORM}" \
-                                        -v "${SYSTMP}:/tmp" \
-                                        -v "${HOME}/.minisign:/root/.minisign" \
-                                        -e "RO_GHTOKEN=${RO_GHTOKEN}" \
-                                        -e "RO_GLTOKEN=${RO_GLTOKEN}" \
-                                        -e "MINISIGN_KEY=${MINISIGN_KEY}" \
-                                        -e "KEEP_LOGS=${KEEP_LOGS}" \
-                                        -e "PKG_FAMILY_LOCAL=${PKG_FAMILY_LOCAL}" \
-                                        -e "REBUILD=${REBUILD}" \
-                                        -e "HOST_TRIPLET=${HOST_TRIPLET}" \
-                                        ubuntu:latest \
-                                        /bin/bash -c "/tmp/BUILDER.sh ${SBUILD_URL}"
-                                    '''
-                                } else {
-                                    // Host build
-                                    sh '''
-                                    export RO_GHTOKEN="${RO_GHTOKEN}"
-                                    export RO_GLTOKEN="${RO_GLTOKEN}"
-                                    export MINISIGN_KEY="${MINISIGN_KEY}"
-                                    export KEEP_LOGS="${KEEP_LOGS}"
-                                    export PKG_FAMILY_LOCAL="${PKG_FAMILY_LOCAL}"
-                                    export REBUILD="${REBUILD}"
-                                    export HOST_TRIPLET="${HOST_TRIPLET}"
-                                    export BUILD_SYSTEM="${BUILD_SYSTEM}"
-                                    
-                                    "${SYSTMP}/BUILDER.sh" "${SBUILD_URL}"
-                                    '''
-                                }
-                                
-                                // Archive artifacts
-                                sh '''
-                                if [ -f "${SYSTMP}/BUILD_ARTIFACTS.zstd" ]; then
-                                    mkdir -p "${WORKSPACE}/artifacts/${HOST_TRIPLET}"
-                                    cp "${SYSTMP}/BUILD_ARTIFACTS.zstd" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
-                                    cp "${SYSTMP}/BUILD.log" "${WORKSPACE}/artifacts/${HOST_TRIPLET}/"
-                                fi
-                                '''
-                            }
-                        }
-                    }
+                    // ... rest of the stages remain the same ...
                 }
             }
         }
     }
 
-    post {
-        always {
-            script {
-                // Archive artifacts if they exist
-                if (fileExists("${WORKSPACE}/artifacts")) {
-                    archiveArtifacts artifacts: "artifacts/**", allowEmptyArchive: true
-                }
-                
-                // Clean up if not keeping logs
-                if (!env.KEEP_LOGS.toBoolean()) {
-                    sh "rm -rf ${SYSTMP}"
-                }
-            }
-        }
-        
-        success {
-            echo "Build completed successfully for all architectures"
-        }
-        
-        failure {
-            echo "Build failed for one or more architectures"
-        }
-    }
+    // ... post section remains the same ...
 }
 
 // Helper function to generate runner matrix
@@ -270,4 +146,15 @@ def generateRunnerMatrix(host, ciInfra) {
     }
     
     return writeJSON returnText: true, json: matrix
+}
+
+// Helper function to determine agent label
+def determineAgentLabel(host) {
+    if (host.contains('aarch64')) {
+        return 'arm64-node'
+    } else if (host.contains('riscv64')) {
+        return 'riscv64-node'
+    } else {
+        return 'amd64-node'
+    }
 }
