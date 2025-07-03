@@ -130,51 +130,51 @@ pipeline {
                         }
                     }
 
-                    stage('Process SBUILD') {
-                        steps {
-                            script {
-                                // Download and validate SBUILD file
-                                sh """
-                                curl -w "(SBUILD) <== %{url}\\n" -fL "${params.SBUILD_URL}" -o "${SYSTMP}/SBUILD_INPUT"
-                                if [ ! -s "${SYSTMP}/SBUILD_INPUT" ] || [ $(stat -c%s "${SYSTMP}/SBUILD_INPUT") -le 10 ]; then
-                                    echo "[✗] FATAL: Failed to fetch ${params.SBUILD_URL}"
-                                    exit 1
-                                fi
-                                """
-                                
-                                // Check host support in SBUILD
-                                def hostSupported = sh(
-                                    script: """
-                                    yq e '.x_exec.host[]' "${SYSTMP}/SBUILD_INPUT" | \
-                                    grep -v '^#' | \
-                                    grep -qi "${HOST_TRIPLET.toLowerCase()}" && echo "YES" || echo "NO"
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                                
-                                if (hostSupported == "NO") {
-                                    error("SBUILD does not support ${HOST_TRIPLET} architecture")
-                                }
-                                
-                                // Determine build system
-                                def buildSystem = sh(
-                                    script: """
-                                    yq '.x_exec.bsys' "${SYSTMP}/SBUILD_INPUT" | \
-                                    grep -v '^#' | \
-                                    grep -qi "docker://" && echo "DOCKER" || \
-                                    (grep -qi "host://" && echo "HOST" || echo "UNKNOWN")
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                                
-                                if (buildSystem == "UNKNOWN") {
-                                    error("Unknown build system specified in SBUILD")
-                                }
-                                
-                                env.BUILD_SYSTEM = buildSystem
+                stage('Process SBUILD') {
+                    steps {
+                        script {
+                            // Download and validate SBUILD file
+                            sh '''
+                            curl -w "(SBUILD) <== %{url}\\n" -fL "${SBUILD_URL}" -o "${SYSTMP}/SBUILD_INPUT"
+                            if [ ! -s "${SYSTMP}/SBUILD_INPUT" ] || [ $(stat -c%s "${SYSTMP}/SBUILD_INPUT") -le 10 ]; then
+                                echo "[✗] FATAL: Failed to fetch ${SBUILD_URL}"
+                                exit 1
+                            fi
+                            '''
+                            
+                            // Check host support in SBUILD
+                            def hostSupported = sh(
+                                script: '''
+                                yq e '.x_exec.host[]' "${SYSTMP}/SBUILD_INPUT" | \
+                                grep -v '^#' | \
+                                grep -qi "${HOST_TRIPLET,,}" && echo "YES" || echo "NO"
+                                ''',
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (hostSupported == "NO") {
+                                error("SBUILD does not support ${HOST_TRIPLET} architecture")
                             }
+                            
+                            // Determine build system
+                            def buildSystem = sh(
+                                script: '''
+                                yq '.x_exec.bsys' "${SYSTMP}/SBUILD_INPUT" | \
+                                grep -v '^#' | \
+                                grep -qi "docker://" && echo "DOCKER" || \
+                                (grep -qi "host://" && echo "HOST" || echo "UNKNOWN")
+                                ''',
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (buildSystem == "UNKNOWN") {
+                                error("Unknown build system specified in SBUILD")
+                            }
+                            
+                            env.BUILD_SYSTEM = buildSystem
                         }
                     }
+                }
 
                     stage('Execute Build') {
                         steps {
