@@ -46,6 +46,46 @@ on:
         type: boolean
         default: true
 
+  workflow_dispatch:
+    inputs:
+      host:
+        description: Host (Arch+OS) [ALL ==> Run on All Hosts (No loongarch64|riscv64)]
+        type: string
+        default: "ALL"
+        required: false
+      sbuild-url:
+        description: Raw URL where SBUILD is located
+        type: string
+        required: true
+      ghcr-url:
+        description: Root GHCR URL under which this package will be pushed
+        type: string
+        required: true
+      pkg-family:
+        description: Package Family
+        type: string
+        required: true
+      infra:
+        description: CI Infra (What Build Servers to Use) [Default ==> GitHub]
+        type: string
+        default: "github"
+        required: false
+      debug:
+        description: Debug Mode (Verbose with set -x) [Default ==> False]
+        type: boolean
+        default: false
+        required: false
+      logs:
+        description: Keep Logs? (Preserves Working Dir) [Default ==> True]
+        type: boolean
+        default: true
+        required: false
+      rebuild:
+        description: Force Rebuild this Package? [Default ==> True]
+        type: boolean
+        default: true
+        required: false
+
 jobs:
   preprocess:
     runs-on: ubuntu-latest
