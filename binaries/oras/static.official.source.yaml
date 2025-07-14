@@ -66,7 +66,7 @@ x_exec:
        GOOS="linux"
        export CGO_ENABLED CGO_CFLAGS GOARCH GOOS
        echo "[*] Installing Go..."
-       LOCAL_BIN="${WORKSPACE}/.local/bin"
+       LOCAL_BIN="~/.local/bin"
        mkdir -p "${LOCAL_BIN}" 
        export GO_VERSION="1.23.11"
        wget -q "https://go.dev/dl/go${GO_VERSION}.linux-$(uname -m).tar.gz"
