@@ -65,6 +65,16 @@ x_exec:
        GOARCH="$(uname -m | sed "s/x86_64/amd64/;s/aarch64/arm64/;s/loongarch64/loong64/")"
        GOOS="linux"
        export CGO_ENABLED CGO_CFLAGS GOARCH GOOS
+       echo "[*] Installing Go..."
+       LOCAL_BIN         = "${WORKSPACE}/.local/bin"
+       mkdir -p "${LOCAL_BIN}" 
+       export GO_VERSION="1.23.11"
+       wget -q "https://go.dev/dl/go\${GO_VERSION}.linux-\$(uname -m).tar.gz"
+       rm -rf \${LOCAL_BIN}/go && tar -C \${LOCAL_BIN}/ -xzf "go\${GO_VERSION}.linux-\$(uname -m).tar.gz"
+       export PATH="\${LOCAL_BIN}/go/bin:\$PATH"
+
+       echo "[*] Go version:"
+       go version
       #Build
        git clone --filter "blob:none" --quiet "https://github.com/oras-project/oras" "./TEMPREPO" && cd "./TEMPREPO"
        echo -e "\n[+] Target: \"${GOARCH}/${GOOS}\""
